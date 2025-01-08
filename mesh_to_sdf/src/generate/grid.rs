@@ -11,7 +11,31 @@ use rayon::prelude::*;
 
 use crate::{compare_distances, geo, Grid, Point, SignMethod, SnapResult, Topology};
 
-use super::generic::bvh::BvhNode;
+/// A node in the BVH tree containing the data for a triangle.
+/// Public in the crate so that the grid generation can use it.
+/// `RtreeBvh` uses its own version of this struct to be able to implement the `RTreeObject` trait.
+#[derive(Clone)]
+pub struct BvhNode {
+    bounding_box: bvh::aabb::Aabb<f32, 3>,
+    triangle_index: usize,
+    node_index: usize,
+}
+
+impl bvh::aabb::Bounded<f32, 3> for BvhNode {
+    fn aabb(&self) -> bvh::aabb::Aabb<f32, 3> {
+        self.bounding_box
+    }
+}
+
+impl bvh::bounding_hierarchy::BHShape<f32, 3> for BvhNode {
+    fn set_bh_node_index(&mut self, index: usize) {
+        self.node_index = index;
+    }
+
+    fn bh_node_index(&self) -> usize {
+        self.node_index
+    }
+}
 
 /// State for the binary heap.
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -21,7 +45,7 @@ struct State {
     // current cell in grid.
     cell: [usize; 3],
     // triangle that generated the distance.
-    triangle: (usize, usize, usize),
+    triangle_index: usize,
 }
 
 impl Ord for State {
@@ -30,7 +54,7 @@ impl Ord for State {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         compare_distances(other.distance.into_inner(), self.distance.into_inner())
             .then_with(|| self.cell.cmp(&other.cell))
-            .then_with(|| self.triangle.cmp(&other.triangle))
+            .then_with(|| self.triangle_index.cmp(&other.triangle_index))
     }
 }
 impl PartialOrd for State {
@@ -59,24 +83,18 @@ type Precomputation<'scope, T> = Option<ScopedJoinHandle<'scope, T>>;
 ///
 /// Starts the precomputations in parallel and fetches them when needed.
 /// See `generate_grid_sdf` for more details.
-struct Precomputations<'scope, V>
-where
-    V: Point + Sync + Send + 'static,
-{
-    bvh: Precomputation<'scope, (Bvh<f32, 3>, Vec<BvhNode<V>>)>, // Not initialized if not using Raycast sign method.
-    preheap: Precomputation<'scope, Vec<RwLock<(Triangle, f32)>>>,
+struct Precomputations<'scope> {
+    bvh: Precomputation<'scope, (Bvh<f32, 3>, Vec<BvhNode>)>, // Not initialized if not using Raycast sign method.
+    preheap: Precomputation<'scope, Vec<RwLock<(usize, f32)>>>,
     triangles: Precomputation<'scope, Vec<Triangle>>,
     distances: Precomputation<'scope, Vec<RwLock<f32>>>,
     intersections: Precomputation<'scope, Vec<[AtomicU32; 3]>>,
 }
 
-impl<'scope, V> Precomputations<'scope, V>
-where
-    V: Point + Sync + Send + 'static,
-{
+impl<'scope> Precomputations<'scope> {
     /// Create a new Precomputations struct.
     /// Starts the precomputations in parallel.
-    pub fn new<I>(
+    pub fn new<V, I>(
         vertices: &'scope [V],
         indices: Topology<'scope, I>,
         grid: &'scope Grid<V>,
@@ -84,6 +102,7 @@ where
         scope: &'scope std::thread::Scope<'scope, '_>,
     ) -> Self
     where
+        V: Point + Sync + Send + 'static,
         I: Copy + Into<u32> + Sync + Send,
     {
         let grid_size = grid.get_total_cell_count();
@@ -95,14 +114,29 @@ where
         let bvh_handle = if sign_method == SignMethod::Raycast {
             Some(scope.spawn(move || {
                 let mut bvh_nodes = Topology::get_triangles(vertices, indices)
-                    .map(|triangle| BvhNode {
-                        vertex_indices: triangle,
-                        node_index: 0,
-                        bounding_box: geo::triangle_bounding_box(
+                    .enumerate()
+                    .map(|(triangle_index, triangle)| {
+                        let bounding_box = geo::triangle_bounding_box(
                             &vertices[triangle.0],
                             &vertices[triangle.1],
                             &vertices[triangle.2],
-                        ),
+                        );
+                        let min = nalgebra::Point3::new(
+                            bounding_box.0.x(),
+                            bounding_box.0.y(),
+                            bounding_box.0.z(),
+                        );
+                        let max = nalgebra::Point3::new(
+                            bounding_box.1.x(),
+                            bounding_box.1.y(),
+                            bounding_box.1.z(),
+                        );
+
+                        BvhNode {
+                            triangle_index,
+                            node_index: 0,
+                            bounding_box: bvh::aabb::Aabb::with_bounds(min, max),
+                        }
                     })
                     .collect_vec();
 
@@ -118,7 +152,7 @@ where
         let preheap_handle = scope.spawn(move || {
             let mut preheap = Vec::with_capacity(grid_size);
             for _ in 0..grid_size {
-                preheap.push(RwLock::new(((0, 0, 0), f32::MAX)));
+                preheap.push(RwLock::new((0, f32::MAX)));
             }
             preheap
         });
@@ -173,7 +207,7 @@ where
 
     /// Get the preheap vec.
     /// Panic if the prehead was already fetched.
-    fn get_preheap(&mut self) -> Vec<RwLock<(Triangle, f32)>> {
+    fn get_preheap(&mut self) -> Vec<RwLock<(usize, f32)>> {
         self.preheap.take().unwrap().join().unwrap()
     }
 
@@ -191,7 +225,7 @@ where
 
     /// Get the bvh.
     /// Panic if the bvh was already fetched or if we're not using Raycast sign method.
-    fn get_bvh(&mut self) -> (Bvh<f32, 3>, Vec<BvhNode<V>>) {
+    fn get_bvh(&mut self) -> (Bvh<f32, 3>, Vec<BvhNode>) {
         self.bvh.take().unwrap().join().unwrap()
     }
 }
@@ -280,7 +314,7 @@ where
 
         // We have many things to instantiate that takes time.
         // We run them in parallel in the beginning to avoid being forced to single thread later.
-        let mut precomputations: Precomputations<'_, V> =
+        let mut precomputations: Precomputations<'_> =
             Precomputations::new(vertices, indices, grid, sign_method, scope);
 
         // Fetch the precomputations for the first step.
@@ -331,9 +365,18 @@ where
 
                 let steps = &steps;
                 let distances = &distances;
+                let triangles = &triangles;
 
                 s.spawn(move || {
-                    propagate_heap(vertices, grid, heap, distances, sign_method, steps);
+                    propagate_heap(
+                        vertices,
+                        grid,
+                        triangles,
+                        heap,
+                        distances,
+                        sign_method,
+                        steps,
+                    );
                 });
             }
         });
@@ -359,6 +402,7 @@ where
             let raycasts_done = compute_raycasts(
                 vertices,
                 grid,
+                &triangles,
                 &mut distances,
                 &intersections,
                 &bvh,
@@ -384,76 +428,79 @@ fn generate_preheap<V: Point>(
     vertices: &[V],
     triangles: &[Triangle],
     grid: &Grid<V>,
-    preheap: &[RwLock<(Triangle, f32)>],
+    preheap: &[RwLock<(usize, f32)>],
     sign_method: SignMethod,
     steps: &AtomicU32,
 ) {
-    triangles.par_iter().for_each(|&triangle| {
-        let a = &vertices[triangle.0];
-        let b = &vertices[triangle.1];
-        let c = &vertices[triangle.2];
+    triangles
+        .par_iter()
+        .enumerate()
+        .for_each(|(triangle_idx, &triangle)| {
+            let a = &vertices[triangle.0];
+            let b = &vertices[triangle.1];
+            let c = &vertices[triangle.2];
 
-        // TODO: We can reduce the number of point here by following the triangle "slope" instead of the bounding box.
-        // Like a bresenham algorithm but in 3D. Not sure how to do it though.
-        // This would help a lot for large triangles.
-        // But large triangles means not a lot of them so it should be ok without this optimisation.
-        let bounding_box = geo::triangle_bounding_box(a, b, c);
+            // TODO: We can reduce the number of point here by following the triangle "slope" instead of the bounding box.
+            // Like a bresenham algorithm but in 3D. Not sure how to do it though.
+            // This would help a lot for large triangles.
+            // But large triangles means not a lot of them so it should be ok without this optimisation.
+            let bounding_box = geo::triangle_bounding_box(a, b, c);
 
-        // The bounding box is snapped to the grid.
-        let mut min_cell = match grid.snap_point_to_grid(&bounding_box.0) {
-            SnapResult::Inside(cell) | SnapResult::Outside(cell) => cell,
-        };
-        let mut max_cell = match grid.snap_point_to_grid(&bounding_box.1) {
-            SnapResult::Inside(cell) | SnapResult::Outside(cell) => cell,
-        };
-
-        // We add the neighbour cells if the bounding box is on the wrong side of the grid aligned bounding box.
-        let min_cell_f = grid.get_cell_center(&min_cell);
-        #[expect(clippy::needless_range_loop)]
-        for i in 0..3 {
-            if min_cell[i] > 0 && min_cell_f.get(i) > bounding_box.0.get(i) {
-                min_cell[i] -= 1;
-            }
-        }
-        let max_cell_f = grid.get_cell_center(&max_cell);
-        #[expect(clippy::needless_range_loop)]
-        for i in 0..3 {
-            if max_cell[i] < grid.get_cell_count()[i] - 1
-                && max_cell_f.get(i) < bounding_box.1.get(i)
-            {
-                max_cell[i] += 1;
-            }
-        }
-
-        // For each cell in the bounding box.
-        for cell in itertools::iproduct!(
-            min_cell[0]..=max_cell[0],
-            min_cell[1]..=max_cell[1],
-            min_cell[2]..=max_cell[2]
-        ) {
-            let cell = [cell.0, cell.1, cell.2];
-            let cell_idx = grid.get_cell_idx(&cell);
-
-            let cell_pos = grid.get_cell_center(&cell);
-
-            let distance = match sign_method {
-                SignMethod::Raycast => geo::point_triangle_distance(&cell_pos, a, b, c),
-                SignMethod::Normal => geo::point_triangle_signed_distance(&cell_pos, a, b, c),
+            // The bounding box is snapped to the grid.
+            let mut min_cell = match grid.snap_point_to_grid(&bounding_box.0) {
+                SnapResult::Inside(cell) | SnapResult::Outside(cell) => cell,
+            };
+            let mut max_cell = match grid.snap_point_to_grid(&bounding_box.1) {
+                SnapResult::Inside(cell) | SnapResult::Outside(cell) => cell,
             };
 
-            // We first do an inexpensive check to avoid acquiring the write lock.
-            let stored_distance = preheap[cell_idx].read().1;
-            if compare_distances(distance, stored_distance).is_lt() {
-                // It seems the distance is smaller: acquire the lock and check again.
-                let mut stored_distance = preheap[cell_idx].write();
-                if compare_distances(distance, stored_distance.1).is_lt() {
-                    // New smallest ditance: update the grid and add the cell to the heap.
-                    steps.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                    *stored_distance = (triangle, distance);
+            // We add the neighbour cells if the bounding box is on the wrong side of the grid aligned bounding box.
+            let min_cell_f = grid.get_cell_center(&min_cell);
+            #[expect(clippy::needless_range_loop)]
+            for i in 0..3 {
+                if min_cell[i] > 0 && min_cell_f.get(i) > bounding_box.0.get(i) {
+                    min_cell[i] -= 1;
                 }
             }
-        }
-    });
+            let max_cell_f = grid.get_cell_center(&max_cell);
+            #[expect(clippy::needless_range_loop)]
+            for i in 0..3 {
+                if max_cell[i] < grid.get_cell_count()[i] - 1
+                    && max_cell_f.get(i) < bounding_box.1.get(i)
+                {
+                    max_cell[i] += 1;
+                }
+            }
+
+            // For each cell in the bounding box.
+            for cell in itertools::iproduct!(
+                min_cell[0]..=max_cell[0],
+                min_cell[1]..=max_cell[1],
+                min_cell[2]..=max_cell[2]
+            ) {
+                let cell = [cell.0, cell.1, cell.2];
+                let cell_idx = grid.get_cell_idx(&cell);
+
+                let cell_pos = grid.get_cell_center(&cell);
+
+                let distance = match sign_method {
+                    SignMethod::Raycast => geo::point_triangle_distance(&cell_pos, a, b, c),
+                    SignMethod::Normal => geo::point_triangle_signed_distance(&cell_pos, a, b, c),
+                };
+
+                // We first do an inexpensive check to avoid acquiring the write lock.
+                let stored_distance = preheap[cell_idx].read().1;
+                if compare_distances(distance, stored_distance).is_lt() {
+                    // It seems the distance is smaller: acquire the lock and check again.
+                    let mut stored_distance = preheap[cell_idx].write();
+                    if compare_distances(distance, stored_distance.1).is_lt() {
+                        // New smallest ditance: update the grid and add the cell to the heap.
+                        steps.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        *stored_distance = (triangle_idx, distance);
+                    }
+                }
+            }
+        });
 }
 
 /// Extract the valid cells and triangles from the preheap to generate the heap.
@@ -463,7 +510,7 @@ fn generate_preheap<V: Point>(
 /// to avoid having a thread with only far away cells that will get discarded.
 fn generate_heap<V: Point>(
     grid: &Grid<V>,
-    preheap: &[RwLock<(Triangle, f32)>],
+    preheap: &[RwLock<(usize, f32)>],
     distances: &[RwLock<f32>],
 ) -> Vec<State> {
     preheap
@@ -472,7 +519,7 @@ fn generate_heap<V: Point>(
         .map(|g| *g)
         .enumerate()
         .filter(|(_, (_, d))| *d < f32::MAX)
-        .map(|(cell_idx, (triangle, distance))| {
+        .map(|(cell_idx, (triangle_index, distance))| {
             let cell = grid.get_cell_integer_coordinates(cell_idx);
 
             *distances[cell_idx].write() = distance;
@@ -481,7 +528,7 @@ fn generate_heap<V: Point>(
                     // SAFETY: f32::MAX is not Nan.
                     .unwrap_or(unsafe { NotNan::new_unchecked(f32::MAX) }),
 
-                triangle,
+                triangle_index,
                 cell,
             }
         })
@@ -495,13 +542,20 @@ fn generate_heap<V: Point>(
 fn propagate_heap<V: Point>(
     vertices: &[V],
     grid: &Grid<V>,
+    triangles: &[Triangle],
     mut heap: std::collections::BinaryHeap<State>,
     distances: &[RwLock<f32>],
     sign_method: SignMethod,
     steps: &AtomicU32,
 ) {
-    while let Some(State { triangle, cell, .. }) = heap.pop() {
+    while let Some(State {
+        triangle_index,
+        cell,
+        ..
+    }) = heap.pop()
+    {
         steps.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let triangle = &triangles[triangle_index];
         let a = &vertices[triangle.0];
         let b = &vertices[triangle.1];
         let c = &vertices[triangle.2];
@@ -547,7 +601,7 @@ fn propagate_heap<V: Point>(
                     distance: NotNan::new(distance)
                         // SAFETY: f32::MAX is not Nan.
                         .unwrap_or(unsafe { NotNan::new_unchecked(f32::MAX) }),
-                    triangle,
+                    triangle_index,
                     cell: neighbour_cell,
                 };
 
@@ -568,10 +622,11 @@ fn propagate_heap<V: Point>(
 fn compute_raycasts<V: Point>(
     vertices: &[V],
     grid: &Grid<V>,
+    triangles: &[Triangle],
     distances: &mut [f32],
     intersections: &[[AtomicU32; 3]],
     bvh: &Bvh<f32, 3>,
-    bvh_nodes: &[BvhNode<V>],
+    bvh_nodes: &[BvhNode],
 ) -> u32 {
     let raycasts_to_do = generate_raycasts(grid);
     let raycasts_done = AtomicU32::new(0);
@@ -594,9 +649,10 @@ fn compute_raycasts<V: Point>(
             core::sync::atomic::Ordering::Relaxed,
         );
         for candidate in candidates {
-            let a = &vertices[candidate.vertex_indices.0];
-            let b = &vertices[candidate.vertex_indices.1];
-            let c = &vertices[candidate.vertex_indices.2];
+            let triangle = &triangles[candidate.triangle_index];
+            let a = &vertices[triangle.0];
+            let b = &vertices[triangle.1];
+            let c = &vertices[triangle.2];
 
             if let Some(distance) =
                 geo::ray_triangle_intersection_aligned(&cell_pos, [a, b, c], data.direction)
