@@ -4,6 +4,7 @@ use core::cmp::Ordering;
 
 use bvh::{bounding_hierarchy::BoundingHierarchy, bvh::Bvh};
 use itertools::Itertools;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
 use crate::{bvh_ext::BvhDistance, compare_distances, geo, Point, SignMethod, Topology};

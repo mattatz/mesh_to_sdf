@@ -129,6 +129,7 @@ use std::boxed::Box;
 
 use itertools::Itertools;
 
+#[cfg(not(target_arch = "wasm32"))]
 use generate::generic::{
     bvh::generate_sdf_bvh, default::generate_sdf_default, rtree::generate_sdf_rtree,
     rtree_bvh::generate_sdf_rtree_bvh,
@@ -288,6 +289,7 @@ fn compare_distances(a: f32, b: f32) -> core::cmp::Ordering {
 ///
 /// # assert_eq!(sdf, vec![1.0]);
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn generate_sdf<V, I>(
     vertices: &[V],
     indices: Topology<I>,

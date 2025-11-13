@@ -1,17 +1,63 @@
 //! Grid generation module.
 
 use core::sync::atomic::AtomicU32;
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread::ScopedJoinHandle;
 
-use bvh::{bounding_hierarchy::BoundingHierarchy, bvh::Bvh};
+#[cfg(not(target_arch = "wasm32"))]
+use bvh::bounding_hierarchy::BoundingHierarchy;
+use bvh::bvh::Bvh;
 use itertools::Itertools;
 use ordered_float::NotNan;
+#[cfg(not(target_arch = "wasm32"))]
 use parking_lot::RwLock;
+#[cfg(target_arch = "wasm32")]
+use std::sync::RwLock;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
 use crate::{compare_distances, geo, Grid, Point, SignMethod, SnapResult, Topology};
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::generic::bvh::BvhNode;
+
+/// A node in the BVH tree containing the data for a triangle.
+/// This is used for grid generation.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+pub struct BvhNode<V: Point> {
+    pub vertex_indices: (usize, usize, usize),
+    pub node_index: usize,
+    pub bounding_box: (V, V),
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<V: Point> bvh::aabb::Bounded<f32, 3> for BvhNode<V> {
+    fn aabb(&self) -> bvh::aabb::Aabb<f32, 3> {
+        let min = nalgebra::Point3::new(
+            self.bounding_box.0.x(),
+            self.bounding_box.0.y(),
+            self.bounding_box.0.z(),
+        );
+        let max = nalgebra::Point3::new(
+            self.bounding_box.1.x(),
+            self.bounding_box.1.y(),
+            self.bounding_box.1.z(),
+        );
+        bvh::aabb::Aabb::with_bounds(min, max)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<V: Point> bvh::bounding_hierarchy::BHShape<f32, 3> for BvhNode<V> {
+    fn set_bh_node_index(&mut self, index: usize) {
+        self.node_index = index;
+    }
+
+    fn bh_node_index(&self) -> usize {
+        self.node_index
+    }
+}
 
 /// State for the binary heap.
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -53,12 +99,18 @@ type Triangle = (usize, usize, usize);
 /// Precomputation type.
 /// It's a scoped join handle that can be None if the precomputation is not needed
 /// or if it's already been fetched.
+#[cfg(not(target_arch = "wasm32"))]
 type Precomputation<'scope, T> = Option<ScopedJoinHandle<'scope, T>>;
+
+/// For wasm32, we use Option<T> directly since we compute immediately
+#[cfg(target_arch = "wasm32")]
+type Precomputation<'scope, T> = Option<T>;
 
 /// Helper struct to generate a grid sdf.
 ///
 /// Starts the precomputations in parallel and fetches them when needed.
 /// See `generate_grid_sdf` for more details.
+#[cfg(not(target_arch = "wasm32"))]
 struct Precomputations<'scope, V>
 where
     V: Point + Sync + Send + 'static,
@@ -70,12 +122,27 @@ where
     intersections: Precomputation<'scope, Vec<[AtomicU32; 3]>>,
 }
 
+/// Helper struct to generate a grid sdf (wasm32).
+#[cfg(target_arch = "wasm32")]
+struct Precomputations<'scope, V>
+where
+    V: Point + Sync + Send + 'static,
+{
+    bvh: Precomputation<'scope, (Bvh<f32, 3>, Vec<BvhNode<V>>)>,
+    preheap: Precomputation<'scope, Vec<RwLock<(Triangle, f32)>>>,
+    triangles: Precomputation<'scope, Vec<Triangle>>,
+    distances: Precomputation<'scope, Vec<RwLock<f32>>>,
+    intersections: Precomputation<'scope, Vec<[AtomicU32; 3]>>,
+    _marker: core::marker::PhantomData<&'scope ()>,
+}
+
 impl<'scope, V> Precomputations<'scope, V>
 where
     V: Point + Sync + Send + 'static,
 {
     /// Create a new Precomputations struct.
     /// Starts the precomputations in parallel.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new<I>(
         vertices: &'scope [V],
         indices: Topology<'scope, I>,
@@ -165,34 +232,140 @@ where
         }
     }
 
+    /// Create a new Precomputations struct for wasm32.
+    /// Computes everything immediately in a single thread.
+    #[cfg(target_arch = "wasm32")]
+    pub fn new<I>(
+        vertices: &'scope [V],
+        indices: Topology<'scope, I>,
+        grid: &'scope Grid<V>,
+        sign_method: SignMethod,
+        _scope: &'scope (),
+    ) -> Self
+    where
+        I: Copy + Into<u32> + Sync + Send,
+    {
+        let grid_size = grid.get_total_cell_count();
+
+        // For wasm32, compute BVH immediately if needed
+        let bvh = if sign_method == SignMethod::Raycast {
+            let mut bvh_nodes = Topology::get_triangles(vertices, indices)
+                .map(|triangle| BvhNode {
+                    vertex_indices: triangle,
+                    node_index: 0,
+                    bounding_box: geo::triangle_bounding_box(
+                        &vertices[triangle.0],
+                        &vertices[triangle.1],
+                        &vertices[triangle.2],
+                    ),
+                })
+                .collect_vec();
+
+            let bvh = Bvh::build(&mut bvh_nodes);
+            Some((bvh, bvh_nodes))
+        } else {
+            None
+        };
+
+        // Preheap initialization
+        let mut preheap = Vec::with_capacity(grid_size);
+        for _ in 0..grid_size {
+            preheap.push(RwLock::new(((0, 0, 0), f32::MAX)));
+        }
+
+        // Triangles vec
+        let triangles = Topology::get_triangles(vertices, indices).collect::<Vec<Triangle>>();
+
+        // Distances initialization
+        let mut distances = Vec::with_capacity(grid_size);
+        for _ in 0..grid_size {
+            distances.push(RwLock::new(f32::MAX));
+        }
+
+        // Intersections initialization
+        let intersections = if sign_method == SignMethod::Raycast {
+            let mut intersections = Vec::with_capacity(grid_size);
+            for _ in 0..grid_size {
+                intersections.push([AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)]);
+            }
+            intersections
+        } else {
+            Vec::new()
+        };
+
+        Self {
+            bvh,
+            preheap: Some(preheap),
+            triangles: Some(triangles),
+            distances: Some(distances),
+            intersections: Some(intersections),
+            _marker: core::marker::PhantomData,
+        }
+    }
+
     /// Get the distances vec.
     /// Panic if the distances were already fetched.
+    #[cfg(not(target_arch = "wasm32"))]
     fn get_distances(&mut self) -> Vec<RwLock<f32>> {
         self.distances.take().unwrap().join().unwrap()
     }
 
     /// Get the preheap vec.
     /// Panic if the prehead was already fetched.
+    #[cfg(not(target_arch = "wasm32"))]
     fn get_preheap(&mut self) -> Vec<RwLock<(Triangle, f32)>> {
         self.preheap.take().unwrap().join().unwrap()
     }
 
     /// Get the triangles vec.
     /// Panic if the triangles were already fetched.
+    #[cfg(not(target_arch = "wasm32"))]
     fn get_triangles(&mut self) -> Vec<Triangle> {
         self.triangles.take().unwrap().join().unwrap()
     }
 
     /// Get the intersections vec.
     /// Panic if the intersections were already fetched.
+    #[cfg(not(target_arch = "wasm32"))]
     fn get_intersections(&mut self) -> Vec<[AtomicU32; 3]> {
         self.intersections.take().unwrap().join().unwrap()
     }
 
     /// Get the bvh.
     /// Panic if the bvh was already fetched or if we're not using Raycast sign method.
+    #[cfg(not(target_arch = "wasm32"))]
     fn get_bvh(&mut self) -> (Bvh<f32, 3>, Vec<BvhNode<V>>) {
         self.bvh.take().unwrap().join().unwrap()
+    }
+
+    /// Get the distances vec (wasm32 version).
+    #[cfg(target_arch = "wasm32")]
+    fn get_distances(&mut self) -> Vec<RwLock<f32>> {
+        self.distances.take().unwrap()
+    }
+
+    /// Get the preheap vec (wasm32 version).
+    #[cfg(target_arch = "wasm32")]
+    fn get_preheap(&mut self) -> Vec<RwLock<(Triangle, f32)>> {
+        self.preheap.take().unwrap()
+    }
+
+    /// Get the triangles vec (wasm32 version).
+    #[cfg(target_arch = "wasm32")]
+    fn get_triangles(&mut self) -> Vec<Triangle> {
+        self.triangles.take().unwrap()
+    }
+
+    /// Get the intersections vec (wasm32 version).
+    #[cfg(target_arch = "wasm32")]
+    fn get_intersections(&mut self) -> Vec<[AtomicU32; 3]> {
+        self.intersections.take().unwrap()
+    }
+
+    /// Get the bvh (wasm32 version).
+    #[cfg(target_arch = "wasm32")]
+    fn get_bvh(&mut self) -> (Bvh<f32, 3>, Vec<BvhNode<V>>) {
+        self.bvh.take().unwrap()
     }
 }
 
@@ -262,6 +435,7 @@ where
 /// - We do a best of three to avoid issues with non-watertight meshes, so we need two rays saying the cell is inside.
 ///
 /// - return the grid.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn generate_grid_sdf<V, I>(
     vertices: &[V],
     indices: Topology<I>,
@@ -377,9 +551,93 @@ where
     })
 }
 
+/// Generate a signed distance field from a mesh for a grid (wasm32 version).
+/// This version runs single-threaded as wasm32 doesn't support thread::scope.
+#[cfg(target_arch = "wasm32")]
+pub fn generate_grid_sdf<V, I>(
+    vertices: &[V],
+    indices: Topology<I>,
+    grid: &Grid<V>,
+    sign_method: SignMethod,
+) -> Vec<f32>
+where
+    V: Point + Sync + Send + 'static,
+    I: Copy + Into<u32> + Sync + Send,
+{
+    // debug step counter and time.
+    let mut now = web_time::Instant::now();
+    let steps = AtomicU32::new(0);
+
+    // We have many things to instantiate that takes time.
+    let mut precomputations: Precomputations<'_, V> =
+        Precomputations::new(vertices, indices, grid, sign_method, &());
+
+    // Fetch the precomputations for the first step.
+    let triangles = precomputations.get_triangles();
+    let preheap = precomputations.get_preheap();
+
+    // Process triangles sequentially instead of in parallel
+    generate_preheap_sequential(vertices, &triangles, grid, &preheap, sign_method, &steps);
+
+    // Fetch the distances precomputation.
+    let distances = precomputations.get_distances();
+
+    // Generate the heap from the preheap by extracting the cells with valid triangles.
+    let heap = generate_heap(grid, &preheap, &distances);
+
+    // First step done.
+    log::info!(
+        "[generate_grid_sdf] init steps: {} in {:.3}ms",
+        steps.fetch_min(0, core::sync::atomic::Ordering::SeqCst),
+        now.elapsed().as_secs_f64() * 1000.0
+    );
+    now = web_time::Instant::now();
+
+    // For wasm32, process the heap in a single thread
+    let heap = std::collections::BinaryHeap::from(heap);
+    propagate_heap(vertices, grid, heap, &distances, sign_method, &steps);
+
+    // Second step done.
+    log::info!(
+        "[generate_grid_sdf] propagation steps: {} in {:.3}ms",
+        steps.fetch_min(0, core::sync::atomic::Ordering::SeqCst),
+        now.elapsed().as_secs_f64() * 1000.0
+    );
+    now = web_time::Instant::now();
+
+    // We don't need the `RwLock` anymore on distances.
+    let mut distances = distances.iter().map(|d| *d.read().unwrap()).collect_vec();
+
+    if sign_method == SignMethod::Raycast {
+        // Fetch the intersections and bvh precomputation.
+        let intersections = precomputations.get_intersections();
+        let (bvh, bvh_nodes) = precomputations.get_bvh();
+
+        // Run raycasts sequentially instead of in parallel
+        let raycasts_done = compute_raycasts_sequential(
+            vertices,
+            grid,
+            &mut distances,
+            &intersections,
+            &bvh,
+            &bvh_nodes,
+        );
+
+        // Raycasts done.
+        log::info!(
+            "[generate_grid_sdf] raycasts done: {} in {:.3}ms",
+            raycasts_done,
+            now.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+
+    distances
+}
+
 /// Generate the preheap by going through all the triangles and their bounding boxes.
 /// The preheap is a grid storing the closest triangle and distance for each cell.
 /// Triangles are processed in parallel.
+#[cfg(not(target_arch = "wasm32"))]
 fn generate_preheap<V: Point>(
     vertices: &[V],
     triangles: &[Triangle],
@@ -456,11 +714,80 @@ fn generate_preheap<V: Point>(
     });
 }
 
+/// Generate the preheap sequentially for wasm32.
+#[cfg(target_arch = "wasm32")]
+fn generate_preheap_sequential<V: Point>(
+    vertices: &[V],
+    triangles: &[Triangle],
+    grid: &Grid<V>,
+    preheap: &[RwLock<(Triangle, f32)>],
+    sign_method: SignMethod,
+    steps: &AtomicU32,
+) {
+    for &triangle in triangles {
+        let a = &vertices[triangle.0];
+        let b = &vertices[triangle.1];
+        let c = &vertices[triangle.2];
+
+        let bounding_box = geo::triangle_bounding_box(a, b, c);
+
+        let mut min_cell = match grid.snap_point_to_grid(&bounding_box.0) {
+            SnapResult::Inside(cell) | SnapResult::Outside(cell) => cell,
+        };
+        let mut max_cell = match grid.snap_point_to_grid(&bounding_box.1) {
+            SnapResult::Inside(cell) | SnapResult::Outside(cell) => cell,
+        };
+
+        let min_cell_f = grid.get_cell_center(&min_cell);
+        #[expect(clippy::needless_range_loop)]
+        for i in 0..3 {
+            if min_cell[i] > 0 && min_cell_f.get(i) > bounding_box.0.get(i) {
+                min_cell[i] -= 1;
+            }
+        }
+        let max_cell_f = grid.get_cell_center(&max_cell);
+        #[expect(clippy::needless_range_loop)]
+        for i in 0..3 {
+            if max_cell[i] < grid.get_cell_count()[i] - 1
+                && max_cell_f.get(i) < bounding_box.1.get(i)
+            {
+                max_cell[i] += 1;
+            }
+        }
+
+        for cell in itertools::iproduct!(
+            min_cell[0]..=max_cell[0],
+            min_cell[1]..=max_cell[1],
+            min_cell[2]..=max_cell[2]
+        ) {
+            let cell = [cell.0, cell.1, cell.2];
+            let cell_idx = grid.get_cell_idx(&cell);
+
+            let cell_pos = grid.get_cell_center(&cell);
+
+            let distance = match sign_method {
+                SignMethod::Raycast => geo::point_triangle_distance(&cell_pos, a, b, c),
+                SignMethod::Normal => geo::point_triangle_signed_distance(&cell_pos, a, b, c),
+            };
+
+            let stored_distance = preheap[cell_idx].read().unwrap().1;
+            if compare_distances(distance, stored_distance).is_lt() {
+                let mut stored_distance = preheap[cell_idx].write().unwrap();
+                if compare_distances(distance, stored_distance.1).is_lt() {
+                    steps.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    *stored_distance = (triangle, distance);
+                }
+            }
+        }
+    }
+}
+
 /// Extract the valid cells and triangles from the preheap to generate the heap.
 /// Also prepare the distances for the propagation step.
 /// We return a vec as it will be split in multiple parts for the propagation step.
 /// We sort it to make sure all threads will have good candidates to start with
 /// to avoid having a thread with only far away cells that will get discarded.
+#[cfg(not(target_arch = "wasm32"))]
 fn generate_heap<V: Point>(
     grid: &Grid<V>,
     preheap: &[RwLock<(Triangle, f32)>],
@@ -489,9 +816,39 @@ fn generate_heap<V: Point>(
         .collect::<Vec<_>>()
 }
 
+/// Extract the valid cells and triangles from the preheap to generate the heap (wasm32).
+#[cfg(target_arch = "wasm32")]
+fn generate_heap<V: Point>(
+    grid: &Grid<V>,
+    preheap: &[RwLock<(Triangle, f32)>],
+    distances: &[RwLock<f32>],
+) -> Vec<State> {
+    preheap
+        .iter()
+        .map(|m| *m.read().unwrap())
+        .enumerate()
+        .filter(|(_, (_, d))| *d < f32::MAX)
+        .map(|(cell_idx, (triangle, distance))| {
+            let cell = grid.get_cell_integer_coordinates(cell_idx);
+
+            *distances[cell_idx].write().unwrap() = distance;
+            State {
+                distance: NotNan::new(distance)
+                    // SAFETY: f32::MAX is not Nan.
+                    .unwrap_or(unsafe { NotNan::new_unchecked(f32::MAX) }),
+
+                triangle,
+                cell,
+            }
+        })
+        .sorted_unstable()
+        .collect::<Vec<_>>()
+}
+
 /// Propagate the distances in the grid.
 /// The propagation is done in parallel by splitting the heap in multiple parts
 /// and running a bfs for all threads.
+#[cfg(not(target_arch = "wasm32"))]
 fn propagate_heap<V: Point>(
     vertices: &[V],
     grid: &Grid<V>,
@@ -557,6 +914,69 @@ fn propagate_heap<V: Point>(
     }
 }
 
+/// Propagate the distances in the grid (wasm32).
+#[cfg(target_arch = "wasm32")]
+fn propagate_heap<V: Point>(
+    vertices: &[V],
+    grid: &Grid<V>,
+    mut heap: std::collections::BinaryHeap<State>,
+    distances: &[RwLock<f32>],
+    sign_method: SignMethod,
+    steps: &AtomicU32,
+) {
+    while let Some(State { triangle, cell, .. }) = heap.pop() {
+        steps.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let a = &vertices[triangle.0];
+        let b = &vertices[triangle.1];
+        let c = &vertices[triangle.2];
+
+        #[expect(clippy::cast_possible_wrap)]
+        let neighbours = itertools::iproduct!(-1..=1, -1..=1, -1..=1)
+            .map(|v| {
+                (
+                    cell[0] as isize + v.0,
+                    cell[1] as isize + v.1,
+                    cell[2] as isize + v.2,
+                )
+            })
+            .filter(|&(x, y, z)| {
+                x >= 0
+                    && y >= 0
+                    && z >= 0
+                    && x < grid.get_cell_count()[0] as isize
+                    && y < grid.get_cell_count()[1] as isize
+                    && z < grid.get_cell_count()[2] as isize
+            })
+            .map(|(x, y, z)| [x as usize, y as usize, z as usize]);
+
+        for neighbour_cell in neighbours {
+            let neighbour_cell_pos = grid.get_cell_center(&neighbour_cell);
+
+            let neighbour_cell_idx = grid.get_cell_idx(&neighbour_cell);
+
+            let distance = match sign_method {
+                SignMethod::Raycast => geo::point_triangle_distance(&neighbour_cell_pos, a, b, c),
+                SignMethod::Normal => {
+                    geo::point_triangle_signed_distance(&neighbour_cell_pos, a, b, c)
+                }
+            };
+
+            let mut stored_distance = distances[neighbour_cell_idx].write().unwrap();
+            if compare_distances(distance, *stored_distance).is_lt() {
+                *stored_distance = distance;
+                let state = State {
+                    distance: NotNan::new(distance)
+                        .unwrap_or(unsafe { NotNan::new_unchecked(f32::MAX) }),
+                    triangle,
+                    cell: neighbour_cell,
+                };
+
+                heap.push(state);
+            }
+        }
+    }
+}
+
 /// `ray_triangle_intersection` tests for direction [1.0, 0.0, 0.0]
 /// The idea here is to tests for all cells (x=0, y, z) and triangle via a bvh
 /// For each triangle with an intersection at distance `t`,
@@ -565,6 +985,7 @@ fn propagate_heap<V: Point>(
 /// Finally, count the number of intersections for each cell on the three axes.
 /// If the number is odd for at least two axes, the cell is inside the mesh. (best of 3)
 /// Otherwise the cell is outside the mesh.
+#[cfg(not(target_arch = "wasm32"))]
 fn compute_raycasts<V: Point>(
     vertices: &[V],
     grid: &Grid<V>,
@@ -639,6 +1060,73 @@ fn compute_raycasts<V: Point>(
     }
 
     raycasts_done.load(core::sync::atomic::Ordering::SeqCst)
+}
+
+/// Sequential version of compute_raycasts for wasm32.
+#[cfg(target_arch = "wasm32")]
+fn compute_raycasts_sequential<V: Point>(
+    vertices: &[V],
+    grid: &Grid<V>,
+    distances: &mut [f32],
+    intersections: &[[AtomicU32; 3]],
+    bvh: &Bvh<f32, 3>,
+    bvh_nodes: &[BvhNode<V>],
+) -> u32 {
+    let raycasts_to_do = generate_raycasts(grid);
+    let mut raycasts_done = 0u32;
+
+    for data in &raycasts_to_do {
+        let cell_pos = grid.get_cell_center(&data.start_cell);
+        let ray_dir = match data.direction {
+            geo::GridAlign::X => nalgebra::Vector3::new(1.0, 0.0, 0.0),
+            geo::GridAlign::Y => nalgebra::Vector3::new(0.0, 1.0, 0.0),
+            geo::GridAlign::Z => nalgebra::Vector3::new(0.0, 0.0, 1.0),
+        };
+
+        let ray = bvh::ray::Ray::new(
+            nalgebra::Point3::new(cell_pos.x(), cell_pos.y(), cell_pos.z()),
+            ray_dir,
+        );
+        let candidates = bvh.traverse(&ray, bvh_nodes);
+        raycasts_done += candidates.len() as u32;
+
+        for candidate in candidates {
+            let a = &vertices[candidate.vertex_indices.0];
+            let b = &vertices[candidate.vertex_indices.1];
+            let c = &vertices[candidate.vertex_indices.2];
+
+            if let Some(distance) =
+                geo::ray_triangle_intersection_aligned(&cell_pos, [a, b, c], data.direction)
+            {
+                let direction_index = data.direction as usize;
+                let cell_count = distance / grid.get_cell_size().get(direction_index);
+                let cell_count =
+                    (cell_count.floor() as usize).min(grid.get_cell_count()[direction_index] - 1);
+
+                let mut cell = data.start_cell;
+                for index in 0..=cell_count {
+                    cell[direction_index] = index;
+                    let cell_idx = grid.get_cell_idx(&cell);
+                    intersections[cell_idx][direction_index]
+                        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    for (i, distance) in distances.iter_mut().enumerate() {
+        let inter = [
+            intersections[i][0].load(core::sync::atomic::Ordering::SeqCst),
+            intersections[i][1].load(core::sync::atomic::Ordering::SeqCst),
+            intersections[i][2].load(core::sync::atomic::Ordering::SeqCst),
+        ];
+        match (inter[0] % 2, inter[1] % 2, inter[2] % 2) {
+            (1, 1, _) | (1, _, 1) | (_, 1, 1) => *distance = -*distance,
+            _ => {}
+        }
+    }
+
+    raycasts_done
 }
 
 /// Generate raycasts for the sign raycast method in a grid.
