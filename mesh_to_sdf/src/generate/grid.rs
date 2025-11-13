@@ -305,67 +305,67 @@ where
 
     /// Get the distances vec.
     /// Panic if the distances were already fetched.
-    #[cfg(not(target_arch = "wasm32"))]
     fn get_distances(&mut self) -> Vec<RwLock<f32>> {
-        self.distances.take().unwrap().join().unwrap()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.distances.take().unwrap().join().unwrap()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.distances.take().unwrap()
+        }
     }
 
     /// Get the preheap vec.
     /// Panic if the prehead was already fetched.
-    #[cfg(not(target_arch = "wasm32"))]
     fn get_preheap(&mut self) -> Vec<RwLock<(Triangle, f32)>> {
-        self.preheap.take().unwrap().join().unwrap()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.preheap.take().unwrap().join().unwrap()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.preheap.take().unwrap()
+        }
     }
 
     /// Get the triangles vec.
     /// Panic if the triangles were already fetched.
-    #[cfg(not(target_arch = "wasm32"))]
     fn get_triangles(&mut self) -> Vec<Triangle> {
-        self.triangles.take().unwrap().join().unwrap()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.triangles.take().unwrap().join().unwrap()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.triangles.take().unwrap()
+        }
     }
 
     /// Get the intersections vec.
     /// Panic if the intersections were already fetched.
-    #[cfg(not(target_arch = "wasm32"))]
     fn get_intersections(&mut self) -> Vec<[AtomicU32; 3]> {
-        self.intersections.take().unwrap().join().unwrap()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.intersections.take().unwrap().join().unwrap()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.intersections.take().unwrap()
+        }
     }
 
     /// Get the bvh.
     /// Panic if the bvh was already fetched or if we're not using Raycast sign method.
-    #[cfg(not(target_arch = "wasm32"))]
     fn get_bvh(&mut self) -> (Bvh<f32, 3>, Vec<BvhNode<V>>) {
-        self.bvh.take().unwrap().join().unwrap()
-    }
-
-    /// Get the distances vec (wasm32 version).
-    #[cfg(target_arch = "wasm32")]
-    fn get_distances(&mut self) -> Vec<RwLock<f32>> {
-        self.distances.take().unwrap()
-    }
-
-    /// Get the preheap vec (wasm32 version).
-    #[cfg(target_arch = "wasm32")]
-    fn get_preheap(&mut self) -> Vec<RwLock<(Triangle, f32)>> {
-        self.preheap.take().unwrap()
-    }
-
-    /// Get the triangles vec (wasm32 version).
-    #[cfg(target_arch = "wasm32")]
-    fn get_triangles(&mut self) -> Vec<Triangle> {
-        self.triangles.take().unwrap()
-    }
-
-    /// Get the intersections vec (wasm32 version).
-    #[cfg(target_arch = "wasm32")]
-    fn get_intersections(&mut self) -> Vec<[AtomicU32; 3]> {
-        self.intersections.take().unwrap()
-    }
-
-    /// Get the bvh (wasm32 version).
-    #[cfg(target_arch = "wasm32")]
-    fn get_bvh(&mut self) -> (Bvh<f32, 3>, Vec<BvhNode<V>>) {
-        self.bvh.take().unwrap()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.bvh.take().unwrap().join().unwrap()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.bvh.take().unwrap()
+        }
     }
 }
 
@@ -787,7 +787,6 @@ fn generate_preheap_sequential<V: Point>(
 /// We return a vec as it will be split in multiple parts for the propagation step.
 /// We sort it to make sure all threads will have good candidates to start with
 /// to avoid having a thread with only far away cells that will get discarded.
-#[cfg(not(target_arch = "wasm32"))]
 fn generate_heap<V: Point>(
     grid: &Grid<V>,
     preheap: &[RwLock<(Triangle, f32)>],
@@ -795,43 +794,29 @@ fn generate_heap<V: Point>(
 ) -> Vec<State> {
     preheap
         .iter()
-        .map(|m| m.read())
-        .map(|g| *g)
-        .enumerate()
-        .filter(|(_, (_, d))| *d < f32::MAX)
-        .map(|(cell_idx, (triangle, distance))| {
-            let cell = grid.get_cell_integer_coordinates(cell_idx);
-
-            *distances[cell_idx].write() = distance;
-            State {
-                distance: NotNan::new(distance)
-                    // SAFETY: f32::MAX is not Nan.
-                    .unwrap_or(unsafe { NotNan::new_unchecked(f32::MAX) }),
-
-                triangle,
-                cell,
+        .map(|m| {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                *m.read()
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                *m.read().unwrap()
             }
         })
-        .sorted_unstable()
-        .collect::<Vec<_>>()
-}
-
-/// Extract the valid cells and triangles from the preheap to generate the heap (wasm32).
-#[cfg(target_arch = "wasm32")]
-fn generate_heap<V: Point>(
-    grid: &Grid<V>,
-    preheap: &[RwLock<(Triangle, f32)>],
-    distances: &[RwLock<f32>],
-) -> Vec<State> {
-    preheap
-        .iter()
-        .map(|m| *m.read().unwrap())
         .enumerate()
         .filter(|(_, (_, d))| *d < f32::MAX)
         .map(|(cell_idx, (triangle, distance))| {
             let cell = grid.get_cell_integer_coordinates(cell_idx);
 
-            *distances[cell_idx].write().unwrap() = distance;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                *distances[cell_idx].write() = distance;
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                *distances[cell_idx].write().unwrap() = distance;
+            }
             State {
                 distance: NotNan::new(distance)
                     // SAFETY: f32::MAX is not Nan.
@@ -848,7 +833,6 @@ fn generate_heap<V: Point>(
 /// Propagate the distances in the grid.
 /// The propagation is done in parallel by splitting the heap in multiple parts
 /// and running a bfs for all threads.
-#[cfg(not(target_arch = "wasm32"))]
 fn propagate_heap<V: Point>(
     vertices: &[V],
     grid: &Grid<V>,
@@ -896,76 +880,17 @@ fn propagate_heap<V: Point>(
                 }
             };
 
+            #[cfg(not(target_arch = "wasm32"))]
             let mut stored_distance = distances[neighbour_cell_idx].write();
+            #[cfg(target_arch = "wasm32")]
+            let mut stored_distance = distances[neighbour_cell_idx].write().unwrap();
+
             if compare_distances(distance, *stored_distance).is_lt() {
                 // New smallest ditance: update the grid and add the cell to the heap.
                 *stored_distance = distance;
                 let state = State {
                     distance: NotNan::new(distance)
                         // SAFETY: f32::MAX is not Nan.
-                        .unwrap_or(unsafe { NotNan::new_unchecked(f32::MAX) }),
-                    triangle,
-                    cell: neighbour_cell,
-                };
-
-                heap.push(state);
-            }
-        }
-    }
-}
-
-/// Propagate the distances in the grid (wasm32).
-#[cfg(target_arch = "wasm32")]
-fn propagate_heap<V: Point>(
-    vertices: &[V],
-    grid: &Grid<V>,
-    mut heap: std::collections::BinaryHeap<State>,
-    distances: &[RwLock<f32>],
-    sign_method: SignMethod,
-    steps: &AtomicU32,
-) {
-    while let Some(State { triangle, cell, .. }) = heap.pop() {
-        steps.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        let a = &vertices[triangle.0];
-        let b = &vertices[triangle.1];
-        let c = &vertices[triangle.2];
-
-        #[expect(clippy::cast_possible_wrap)]
-        let neighbours = itertools::iproduct!(-1..=1, -1..=1, -1..=1)
-            .map(|v| {
-                (
-                    cell[0] as isize + v.0,
-                    cell[1] as isize + v.1,
-                    cell[2] as isize + v.2,
-                )
-            })
-            .filter(|&(x, y, z)| {
-                x >= 0
-                    && y >= 0
-                    && z >= 0
-                    && x < grid.get_cell_count()[0] as isize
-                    && y < grid.get_cell_count()[1] as isize
-                    && z < grid.get_cell_count()[2] as isize
-            })
-            .map(|(x, y, z)| [x as usize, y as usize, z as usize]);
-
-        for neighbour_cell in neighbours {
-            let neighbour_cell_pos = grid.get_cell_center(&neighbour_cell);
-
-            let neighbour_cell_idx = grid.get_cell_idx(&neighbour_cell);
-
-            let distance = match sign_method {
-                SignMethod::Raycast => geo::point_triangle_distance(&neighbour_cell_pos, a, b, c),
-                SignMethod::Normal => {
-                    geo::point_triangle_signed_distance(&neighbour_cell_pos, a, b, c)
-                }
-            };
-
-            let mut stored_distance = distances[neighbour_cell_idx].write().unwrap();
-            if compare_distances(distance, *stored_distance).is_lt() {
-                *stored_distance = distance;
-                let state = State {
-                    distance: NotNan::new(distance)
                         .unwrap_or(unsafe { NotNan::new_unchecked(f32::MAX) }),
                     triangle,
                     cell: neighbour_cell,
