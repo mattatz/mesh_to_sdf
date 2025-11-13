@@ -80,6 +80,7 @@ mod tests {
     use itertools::Itertools;
 
     #[test]
+    #[cfg(feature = "cgmath")]
     fn test_generate() {
         let model = &easy_gltf::load("assets/suzanne.glb").unwrap()[0].models[0];
         let vertices = model.vertices().iter().map(|v| v.position).collect_vec();

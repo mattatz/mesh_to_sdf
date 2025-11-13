@@ -2,6 +2,7 @@
 use itertools::Itertools;
 use mesh_to_sdf::{AccelerationMethod, SignMethod, Topology};
 
+#[cfg(feature = "cgmath")]
 fn main() {
     let path = "assets/suzanne.glb";
     let gltf = easy_gltf::load(path).unwrap();
@@ -61,4 +62,9 @@ fn main() {
             }
         }
     }
+}
+
+#[cfg(not(feature = "cgmath"))]
+fn main() {
+    println!("Please enable the cgmath feature to run this example.");
 }

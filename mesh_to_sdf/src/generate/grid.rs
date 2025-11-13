@@ -1139,6 +1139,7 @@ mod tests {
     /// Test continuity.
     /// Only valid for watertight meshes and Raycast method.
     #[test]
+    #[cfg(feature = "cgmath")]
     fn test_grid_continuity() {
         let model = &easy_gltf::load("assets/ferris3d.glb").unwrap()[0].models[0];
         let vertices = model.vertices().iter().map(|v| v.position).collect_vec();
@@ -1221,6 +1222,7 @@ mod tests {
 
     // Make sure the raycasts on grid do not access out of bounds cells.
     #[test]
+    #[cfg(feature = "cgmath")]
     fn test_grid_raycast() {
         let model = &easy_gltf::load("assets/ferris3d.glb").unwrap()[0].models[0];
         let vertices = model.vertices().iter().map(|v| v.position).collect_vec();

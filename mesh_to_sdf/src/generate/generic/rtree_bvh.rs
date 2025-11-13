@@ -180,6 +180,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "cgmath")]
     fn test_generate_rtree_bvh() {
         let model = &easy_gltf::load("assets/suzanne.glb").unwrap()[0].models[0];
         let vertices = model.vertices().iter().map(|v| v.position).collect_vec();
@@ -217,6 +218,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cgmath")]
     fn test_generate_rtree_bvh_big() {
         let model = &easy_gltf::load("assets/suzanne.glb").unwrap()[0].models[0];
         let vertices = model.vertices().iter().map(|v| v.position).collect_vec();
