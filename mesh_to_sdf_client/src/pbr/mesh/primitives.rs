@@ -54,7 +54,7 @@ pub fn create_box(device: &wgpu::Device) -> Mesh {
 
     let vertices = positions
         .into_iter()
-        .zip(normals.iter().flat_map(|&n| core::iter::repeat(n).take(4)))
+        .zip(normals.iter().flat_map(|&n| std::iter::repeat_n(n, 4)))
         .map(|(position, normal)| MeshVertex {
             position,
             normal,

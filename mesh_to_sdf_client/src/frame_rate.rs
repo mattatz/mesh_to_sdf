@@ -36,7 +36,7 @@ impl FrameRate {
 
     /// Return current parity of the frame.
     pub const fn _get_parity(&self) -> bool {
-        self.current_index % 2 == 0
+        self.current_index.is_multiple_of(2)
     }
 }
 

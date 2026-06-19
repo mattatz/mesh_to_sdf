@@ -113,7 +113,7 @@ where
     query_points
         .par_iter()
         .map(|point| {
-            let nearest = rtree.nearest_neighbor(&PointWrapper(*point));
+            let nearest = rtree.nearest_neighbor(PointWrapper(*point));
             let nearest = nearest.unwrap();
             geo::point_triangle_signed_distance(
                 point,

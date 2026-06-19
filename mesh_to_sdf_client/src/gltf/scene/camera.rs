@@ -111,7 +111,7 @@ impl Camera {
                 cam.zfar = pers.zfar().unwrap_or(f32::INFINITY);
                 cam.znear = pers.znear();
             }
-        };
+        }
         cam
     }
 }

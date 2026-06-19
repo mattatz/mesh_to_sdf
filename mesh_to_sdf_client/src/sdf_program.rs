@@ -590,7 +590,7 @@ impl SdfProgram {
         }
     }
 
-    pub fn get_camera(&mut self) -> &mut crate::camera_control::CameraLookAt {
+    pub const fn get_camera(&mut self) -> &mut crate::camera_control::CameraLookAt {
         &mut self.camera.camera.look_at
     }
 
@@ -649,9 +649,9 @@ impl SdfProgram {
 
                 // Place the camera eye at the center of the model.
                 self.camera.camera.look_at.center = glam::Vec3::new(
-                    (xmin + xmax) / 2.0,
-                    (ymin + ymax) / 2.0,
-                    (zmin + zmax) / 2.0,
+                    f32::midpoint(xmin, xmax),
+                    f32::midpoint(ymin, ymax),
+                    f32::midpoint(zmin, zmax),
                 );
                 // And at a pertinent distance.
                 self.camera.camera.look_at.distance =
@@ -682,9 +682,9 @@ impl SdfProgram {
         };
 
         let middle = [
-            (model_info.bounding_box[0] + model_info.bounding_box[3]) / 2.0,
-            (model_info.bounding_box[1] + model_info.bounding_box[4]) / 2.0,
-            (model_info.bounding_box[2] + model_info.bounding_box[5]) / 2.0,
+            f32::midpoint(model_info.bounding_box[0], model_info.bounding_box[3]),
+            f32::midpoint(model_info.bounding_box[1], model_info.bounding_box[4]),
+            f32::midpoint(model_info.bounding_box[2], model_info.bounding_box[5]),
         ];
         let half_size = [
             (model_info.bounding_box[3] - model_info.bounding_box[0]) / 2.0,

@@ -93,8 +93,7 @@ impl GltfData {
                 if uri.starts_with("data:") {
                     let encoded = uri.split(',').nth(1).unwrap();
                     let data = URL_SAFE_NO_PAD.decode(encoded).unwrap();
-                    let mime_type = mime_type.map_or_else(
-                        || {
+                    let mime_type = mime_type.unwrap_or_else(|| {
                             uri.split(',')
                                 .next()
                                 .unwrap()
@@ -104,9 +103,7 @@ impl GltfData {
                                 .split(';')
                                 .next()
                                 .unwrap()
-                        },
-                        |ty| ty,
-                    );
+                        });
                     let mime_type = mime_type.replace('/', ".");
                     image::load_from_memory_with_format(
                         &data,

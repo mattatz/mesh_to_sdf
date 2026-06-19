@@ -25,7 +25,7 @@ impl SdfProgram {
 
     /// Draw ui with egui.
     #[allow(clippy::unused_self)]
-    pub fn draw_gizmos(&self, _ui: &mut egui::Ui) {
+    pub const fn draw_gizmos(&self, _ui: &mut egui::Ui) {
         // TODO: backport transform.
     }
 
@@ -58,7 +58,7 @@ impl SdfProgram {
                             .map_or(file_name.as_str(), |(_, name)| name),
                     );
                 }
-            };
+            }
             ui.end_row();
 
             self.ui_model_info(ui);
@@ -354,7 +354,7 @@ impl SdfProgram {
                     "Negative Color" => self.settings.settings.negative_color = new_color,
                     "Surface Color" => self.settings.settings.surface_color = new_color,
                     _ => continue,
-                };
+                }
 
                 // Get new state.
                 let new_state = command_stack::State {
@@ -417,7 +417,7 @@ impl SdfProgram {
                     "Surface width" => self.settings.settings.surface_width = new_value,
                     "Point size" => self.settings.settings.point_size = new_value,
                     _ => continue,
-                };
+                }
 
                 // Get new state.
                 let new_state = command_stack::State {

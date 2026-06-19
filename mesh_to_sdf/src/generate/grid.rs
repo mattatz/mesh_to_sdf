@@ -11,10 +11,10 @@ use itertools::Itertools;
 use ordered_float::NotNan;
 #[cfg(not(target_arch = "wasm32"))]
 use parking_lot::RwLock;
-#[cfg(target_arch = "wasm32")]
-use std::sync::RwLock;
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use std::sync::RwLock;
 
 use crate::{compare_distances, geo, Grid, Point, SignMethod, SnapResult, Topology};
 

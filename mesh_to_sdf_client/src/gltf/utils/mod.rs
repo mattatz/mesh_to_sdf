@@ -18,7 +18,7 @@ pub fn transform_to_matrix(transform: Transform) -> Mat4 {
 /// rgb textures are:
 /// - normal textures
 /// - emissive textures
-pub fn get_rgb_textures(doc: &gltf::Document) -> Vec<gltf::Texture> {
+pub fn get_rgb_textures(doc: &gltf::Document) -> Vec<gltf::Texture<'_>> {
     let normal_textures = doc
         .materials()
         .filter_map(|mat| mat.normal_texture())
@@ -55,7 +55,7 @@ pub fn load_rgb_images(doc: &gltf::Document, data: &Arc<RwLock<GltfData>>) {
 /// Get all rgba images from the glTF document.
 /// rgba textures are:
 /// - base color textures
-pub fn get_rgba_textures(doc: &gltf::Document) -> Vec<gltf::Texture> {
+pub fn get_rgba_textures(doc: &gltf::Document) -> Vec<gltf::Texture<'_>> {
     doc.materials()
         .filter_map(|mat| mat.pbr_metallic_roughness().base_color_texture())
         .map(|info| info.texture())
@@ -83,7 +83,7 @@ pub fn load_rbga_images(doc: &gltf::Document, data: &Arc<RwLock<GltfData>>) {
 /// rgba textures are:
 /// - occlusion textures
 /// - metallic roughness textures
-pub fn get_gray_textures(doc: &gltf::Document) -> Vec<gltf::Texture> {
+pub fn get_gray_textures(doc: &gltf::Document) -> Vec<gltf::Texture<'_>> {
     let occlusion_textures = doc
         .materials()
         .filter_map(|mat| mat.occlusion_texture())

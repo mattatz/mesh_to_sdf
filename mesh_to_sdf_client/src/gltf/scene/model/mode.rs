@@ -47,6 +47,6 @@ pub struct BadMode {
 
 impl fmt::Display for BadMode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Invalid mode \"{:?}\"", self.mode,)
+        write!(f, "Invalid mode \"{:?}\"", self.mode)
     }
 }

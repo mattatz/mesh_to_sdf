@@ -148,7 +148,7 @@ impl SurfaceWrapper {
             let format = config.format.remove_srgb_suffix();
             config.format = format;
             config.view_formats.push(format);
-        };
+        }
 
         // Comment to disable freerun and enable v-sync. Note that this is only valid in native.
         // #[cfg(not(target_arch = "wasm32"))]
@@ -203,7 +203,7 @@ impl SurfaceWrapper {
         self.surface = None;
     }
 
-    const fn get(&self) -> Option<&wgpu::Surface> {
+    const fn get(&self) -> Option<&wgpu::Surface<'_>> {
         self.surface.as_ref()
     }
 
@@ -234,7 +234,7 @@ impl ExampleContext {
             dx12_shader_compiler,
             gles_minor_version,
         });
-        log::info!("Created instance: {:?}", instance);
+        log::info!("Created instance: {instance:?}");
 
         surface.pre_adapter(&instance, window);
         let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, surface.get())
@@ -406,7 +406,7 @@ async fn run(
                     target.exit();
                 }
                 if let Some(new_size) = input.window_resized() {
-                    log::info!("Window resized: {:?}", new_size);
+                    log::info!("Window resized: {new_size:?}");
                     // Resize with 0 width and height is used by winit to signal a minimize event on Windows.
                     // See: https://github.com/rust-windowing/winit/issues/208
                     // This solves an issue where the app would panic when minimizing on Windows.

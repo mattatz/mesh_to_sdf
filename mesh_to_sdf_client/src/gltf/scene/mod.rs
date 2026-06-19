@@ -37,7 +37,7 @@ pub struct ModelNode {
     /// Node transform.
     pub transform: glam::Mat4,
     /// Node children.
-    pub children: Vec<ModelNode>,
+    pub children: Vec<Self>,
     /// Name
     pub name: Option<String>,
 }
